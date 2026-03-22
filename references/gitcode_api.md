@@ -116,7 +116,7 @@ Content-Type: application/json
 **请求体**:
 ```json
 {
-  "body": "**严重程度：** Improvement\n\n**问题：** 此处存在不必要的空格。\n\n**原因：** `node = int (node_str)` 不符合 PEP 8，降低可读性，也容易让后续风格检查失败。\n\n**怎么改：**\n```python\nnode = int(node_str)\n```",
+  "body": "**严重程度：** 建议\n\n**问题：** 此处存在不必要的空格。\n\n**原因：** `node = int (node_str)` 不符合 PEP 8，降低可读性，也容易让后续风格检查失败。\n\n**怎么改：**\n```python\nnode = int(node_str)\n```",
   "position": {
     "position_type": "text",
     "base_sha": "abc123...",
@@ -215,7 +215,7 @@ result = post_inline_comment(
     109,
     "misc/host_analyzer/cpu_binder/cpu_binder.py",
     226,
-    "**严重程度：** Improvement\n\n**问题：** 存在不规范的空格。\n\n**原因：** 当前写法不符合 PEP 8，会影响代码风格一致性。\n\n**怎么改：**\n```python\nnode = int(node_str)\n```",
+    "**严重程度：** 建议\n\n**问题：** 存在不规范的空格。\n\n**原因：** 当前写法不符合 PEP 8，会影响代码风格一致性。\n\n**怎么改：**\n```python\nnode = int(node_str)\n```",
     sha_info
 )
 ```

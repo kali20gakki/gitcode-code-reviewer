@@ -113,9 +113,9 @@ git checkout "pr-<NUMBER>-source"
 
 按照严重程度组织问题：
 
-- **Critical**：会导致 bug、安全问题或破坏性变更
-- **Improvement**：建议优化代码质量、性能或实现方式
-- **Nitpick**：格式、风格或其他可选的小问题
+- **严重**：会导致 bug、安全问题或破坏性变更
+- **建议**：建议优化代码质量、性能或实现方式
+- **提示**：格式、风格或其他可选的小问题
 
 默认聚焦真正影响行为、可靠性、兼容性、可维护性的发现；不要把纯风格意见堆成主要结论。
 
@@ -151,7 +151,7 @@ git checkout "pr-<NUMBER>-source"
 
 #### 🔴 严重问题（N 个）
 1. **文件**：`path/to/file.py`（第 42 行）
-   - **严重程度**：Critical
+   - **严重程度**：严重
    - **问题**：描述问题
    - **原因**：解释原因
    - **怎么改**：提供代码示例
@@ -184,7 +184,7 @@ python scripts/post_pr_comment.py \
 **评论正文示例（四段式）**：
 
 ````markdown
-**严重程度：** Improvement
+**严重程度：** 建议
 
 **问题：** 代码中存在不规范的空格
 
@@ -201,7 +201,7 @@ node = int(node_str)
 ````
 
 优先在 `comments.json` 中使用结构化字段：`severity`、`problem`、`reason`、`fix`。  
-`scripts/post_pr_comment.py` 会在发布前将这些字段统一整理为四段式 Markdown 正文，也会自动兼容旧版三段式 `body` 内容。
+`scripts/post_pr_comment.py` 会在发布前将这些字段统一整理为四段式 Markdown 正文，默认输出中文严重程度（`严重`、`建议`、`提示`），也会兼容旧版英文值和旧版三段式 `body` 内容。
 
 ### 9. 清理临时目录
 
@@ -310,7 +310,7 @@ GitCode 同时支持 v4（兼容 GitLab）和 v5（兼容 GitHub）两套 API：
   {
     "path": "relative/path/to/file.py",
     "line": 42,
-    "severity": "Critical",
+    "severity": "严重",
     "problem": "描述问题",
     "reason": "解释为什么这是个问题",
     "fix": "给出修改建议",
@@ -321,7 +321,7 @@ GitCode 同时支持 v4（兼容 GitLab）和 v5（兼容 GitHub）两套 API：
 
 - `path`：相对仓库根目录的文件路径
 - `line`：新文件中的行号
-- `severity`：问题级别，可用值为 `Critical`、`Improvement`、`Nitpick`
+- `severity`：问题级别，建议使用 `严重`、`建议`、`提示`；脚本兼容旧值 `Critical`、`Improvement`、`Nitpick`
 - `problem`：当前代码具体有什么问题
 - `reason`：为什么这是个问题，以及会产生什么影响
 - `fix`：建议如何修改，可附带 Markdown 代码示例

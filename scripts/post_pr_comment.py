@@ -18,7 +18,7 @@ Comments JSON format for inline comments:
     {
         "path": "src/main.py",
         "line": 42,
-        "severity": "Critical",
+        "severity": "严重",
         "problem": "Describe the issue",
         "reason": "Explain why this matters",
         "fix": "Show how to fix it",
@@ -45,45 +45,48 @@ API_V4_BASE = "https://api.gitcode.com/api/v4"
 API_V5_BASE = "https://api.gitcode.com/api/v5"
 COMMENT_SECTION_RE = re.compile(r"\*\*(严重程度|问题|原因|怎么改|应该怎么改)\s*[：:]\*\*")
 SEVERITY_ALIASES = {
-    "critical": "Critical",
-    "crit": "Critical",
-    "严重": "Critical",
-    "严重问题": "Critical",
-    "improvement": "Improvement",
-    "improvements": "Improvement",
-    "improve": "Improvement",
-    "suggestion": "Improvement",
-    "suggestions": "Improvement",
-    "建议": "Improvement",
-    "改进": "Improvement",
-    "优化": "Improvement",
-    "nitpick": "Nitpick",
-    "nitpicks": "Nitpick",
-    "nit": "Nitpick",
-    "style": "Nitpick",
-    "格式": "Nitpick",
-    "样式": "Nitpick",
+    "critical": "严重",
+    "crit": "严重",
+    "严重": "严重",
+    "严重问题": "严重",
+    "高": "严重",
+    "improvement": "建议",
+    "improvements": "建议",
+    "improve": "建议",
+    "suggestion": "建议",
+    "suggestions": "建议",
+    "建议": "建议",
+    "改进": "建议",
+    "优化": "建议",
+    "nitpick": "提示",
+    "nitpicks": "提示",
+    "nit": "提示",
+    "style": "提示",
+    "提示": "提示",
+    "细节": "提示",
+    "格式": "提示",
+    "样式": "提示",
 }
 
 
 def normalize_severity(raw: Optional[str]) -> str:
-    """Normalize severity labels to the canonical review levels."""
+    """Normalize severity labels to the canonical Chinese review levels."""
     if raw is None:
-        return "Improvement"
+        return "建议"
     value = str(raw).strip()
     if not value:
-        return "Improvement"
+        return "建议"
 
     alias = SEVERITY_ALIASES.get(value.lower())
     if alias:
         return alias
 
-    normalized = value[:1].upper() + value[1:]
-    if normalized in {"Critical", "Improvement", "Nitpick"}:
-        return normalized
+    if value in {"严重", "建议", "提示"}:
+        return value
 
     raise ValueError(
-        f"Unsupported severity '{raw}'. Use one of: Critical, Improvement, Nitpick."
+        f"Unsupported severity '{raw}'. Use one of: 严重, 建议, 提示. "
+        "English aliases like Critical, Improvement, Nitpick are also supported."
     )
 
 
@@ -425,7 +428,7 @@ Comments JSON format for inline comments:
     {
         "path": "src/main.py",
         "line": 42,
-        "severity": "Critical",
+        "severity": "严重",
         "problem": "Describe the issue",
         "reason": "Explain why this matters",
         "fix": "Show how to fix it",
