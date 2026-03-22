@@ -18,7 +18,10 @@ Comments JSON format for inline comments:
     {
         "path": "src/main.py",
         "line": 42,
-        "body": "Comment text with **Markdown** support",
+        "severity": "Critical",
+        "problem": "Describe the issue",
+        "reason": "Explain why this matters",
+        "fix": "Show how to fix it",
         "side": "RIGHT"
     }
 ]
@@ -27,6 +30,7 @@ Comments JSON format for inline comments:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.request
@@ -39,6 +43,174 @@ from urllib.parse import quote
 # GitCode API 配置
 API_V4_BASE = "https://api.gitcode.com/api/v4"
 API_V5_BASE = "https://api.gitcode.com/api/v5"
+COMMENT_SECTION_RE = re.compile(r"\*\*(严重程度|问题|原因|怎么改|应该怎么改)\s*[：:]\*\*")
+SEVERITY_ALIASES = {
+    "critical": "Critical",
+    "crit": "Critical",
+    "严重": "Critical",
+    "严重问题": "Critical",
+    "improvement": "Improvement",
+    "improvements": "Improvement",
+    "improve": "Improvement",
+    "suggestion": "Improvement",
+    "suggestions": "Improvement",
+    "建议": "Improvement",
+    "改进": "Improvement",
+    "优化": "Improvement",
+    "nitpick": "Nitpick",
+    "nitpicks": "Nitpick",
+    "nit": "Nitpick",
+    "style": "Nitpick",
+    "格式": "Nitpick",
+    "样式": "Nitpick",
+}
+
+
+def normalize_severity(raw: Optional[str]) -> str:
+    """Normalize severity labels to the canonical review levels."""
+    if raw is None:
+        return "Improvement"
+    value = str(raw).strip()
+    if not value:
+        return "Improvement"
+
+    alias = SEVERITY_ALIASES.get(value.lower())
+    if alias:
+        return alias
+
+    normalized = value[:1].upper() + value[1:]
+    if normalized in {"Critical", "Improvement", "Nitpick"}:
+        return normalized
+
+    raise ValueError(
+        f"Unsupported severity '{raw}'. Use one of: Critical, Improvement, Nitpick."
+    )
+
+
+def format_comment_body(severity: str, problem: str, reason: str, fix: str) -> str:
+    """Render the canonical four-section inline comment body."""
+    return (
+        f"**严重程度：** {normalize_severity(severity)}\n\n"
+        f"**问题：** {problem.strip()}\n\n"
+        f"**原因：** {reason.strip()}\n\n"
+        f"**怎么改：**\n{fix.strip()}"
+    )
+
+
+def parse_comment_body(body: str) -> Dict[str, str]:
+    """Parse a markdown comment body into structured sections."""
+    matches = list(COMMENT_SECTION_RE.finditer(body))
+    if not matches:
+        return {}
+
+    sections: Dict[str, str] = {}
+    for index, match in enumerate(matches):
+        label = match.group(1)
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        content = body[start:end].strip()
+
+        if label == "严重程度":
+            key = "severity"
+        elif label == "问题":
+            key = "problem"
+        elif label == "原因":
+            key = "reason"
+        else:
+            key = "fix"
+
+        sections[key] = content
+
+    return sections
+
+
+def normalize_inline_comment(comment: Dict[str, Any], index: int) -> Dict[str, Any]:
+    """Validate and normalize one inline comment entry."""
+    if not isinstance(comment, dict):
+        raise ValueError(f"Comment #{index} must be a JSON object.")
+
+    path = str(comment.get("path", "")).strip()
+    if not path:
+        raise ValueError(f"Comment #{index} is missing a non-empty 'path'.")
+
+    line = comment.get("line")
+    if not isinstance(line, int) or line <= 0:
+        raise ValueError(f"Comment #{index} has invalid 'line': {line!r}.")
+
+    side = str(comment.get("side", "RIGHT")).upper()
+    if side not in {"RIGHT", "LEFT"}:
+        raise ValueError(f"Comment #{index} has invalid 'side': {side!r}.")
+
+    body = str(comment.get("body", "")).strip()
+    severity_value = comment.get("severity")
+    structured = {
+        "problem": comment.get("problem"),
+        "reason": comment.get("reason"),
+        "fix": comment.get("fix"),
+    }
+    has_structured_content = any(value is not None for value in structured.values())
+
+    if has_structured_content or (severity_value is not None and not body):
+        problem = str(structured["problem"] or "").strip()
+        reason = str(structured["reason"] or "").strip()
+        fix = str(structured["fix"] or "").strip()
+        severity = normalize_severity(severity_value)
+
+        missing = [
+            name for name, value in {
+                "problem": problem,
+                "reason": reason,
+                "fix": fix,
+            }.items() if not value
+        ]
+        if missing:
+            raise ValueError(
+                f"Comment #{index} is missing structured fields: {', '.join(missing)}."
+            )
+    elif body:
+        parsed = parse_comment_body(body)
+        if not parsed:
+            raise ValueError(
+                f"Comment #{index} body must use the four-section format, "
+                "or provide severity/problem/reason/fix fields."
+            )
+
+        severity = normalize_severity(parsed.get("severity") or comment.get("severity"))
+        problem = parsed.get("problem", "").strip()
+        reason = parsed.get("reason", "").strip()
+        fix = parsed.get("fix", "").strip()
+
+        missing = [
+            name for name, value in {
+                "problem": problem,
+                "reason": reason,
+                "fix": fix,
+            }.items() if not value
+        ]
+        if missing:
+            raise ValueError(
+                f"Comment #{index} body is missing sections: {', '.join(missing)}."
+            )
+    else:
+        raise ValueError(
+            f"Comment #{index} must include either 'body' or structured fields "
+            "severity/problem/reason/fix."
+        )
+
+    return {
+        "path": path,
+        "line": line,
+        "body": format_comment_body(severity, problem, reason, fix),
+        "side": side,
+    }
+
+
+def normalize_inline_comments(comments: Any) -> list[Dict[str, Any]]:
+    """Normalize all inline comments before posting."""
+    if not isinstance(comments, list):
+        raise ValueError("Comments file must contain a JSON array.")
+
+    return [normalize_inline_comment(comment, index) for index, comment in enumerate(comments, 1)]
 
 
 def get_gitcode_token(token: Optional[str] = None) -> str:
@@ -253,7 +425,10 @@ Comments JSON format for inline comments:
     {
         "path": "src/main.py",
         "line": 42,
-        "body": "Comment with **Markdown**",
+        "severity": "Critical",
+        "problem": "Describe the issue",
+        "reason": "Explain why this matters",
+        "fix": "Show how to fix it",
         "side": "RIGHT"
     }
 ]
@@ -306,8 +481,10 @@ Comments JSON format for inline comments:
             print(f"Error: Invalid JSON in comments file: {e}", file=sys.stderr)
             sys.exit(1)
         
-        if not isinstance(comments, list):
-            print("Error: Comments file must contain a JSON array", file=sys.stderr)
+        try:
+            comments = normalize_inline_comments(comments)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
         
         if not comments:
