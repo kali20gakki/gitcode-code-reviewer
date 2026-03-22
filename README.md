@@ -125,6 +125,40 @@ mkdir -p ~/.claude/skills
 ln -s "$(pwd)" ~/.claude/skills/gitcode-code-reviewer
 ```
 
+## 更新 Skill
+
+### 使用 skills CLI 更新
+
+先检查是否有可用更新：
+
+```bash
+npx skills check
+```
+
+更新已安装的 Skills：
+
+```bash
+npx skills update
+```
+
+如果你只想重新安装这个仓库里的最新版，也可以再次执行安装命令：
+
+```bash
+npx skills add kali20gakki/gitcode-code-reviewer --skill gitcode-code-reviewer -a codex -g -y
+```
+
+把上面的 `-a codex` 替换成你实际使用的 Agent 即可，例如 `opencode` 或 `claude-code`。
+
+### 手动安装时如何更新
+
+如果你是通过 `git clone` 加软链接的方式安装，进入仓库后执行：
+
+```bash
+git pull
+```
+
+如果你不是软链接，而是直接复制文件到 skills 目录，更新后需要重新复制一遍最新文件。
+
 ## Token 权限
 
 你的 GitCode Token 至少需要这些权限：
