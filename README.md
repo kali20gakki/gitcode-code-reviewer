@@ -32,25 +32,40 @@ npx skills add kali20gakki/gitcode-code-reviewer --skill gitcode-code-reviewer -
 npx skills add kali20gakki/gitcode-code-reviewer --skill gitcode-code-reviewer -a claude-code -g -y
 ```
 
-### 2. 配置 GitCode Token
+### 2. 配置令牌
 
-推荐直接运行：
+发布逐行评论只需要 **一个 OAuth2 令牌**（`GITCODE_OAUTH_TOKEN`）。
+
+#### 2.1 OAuth2 访问令牌（GITCODE_OAUTH_TOKEN）— 发布逐行评论必需
+
+用于创建 diff 关联的逐行评论（评论附着在 diff 行上，可回复/解决）。
+GitCode 公开 API 不支持 diff 关联评论，必须使用 OAuth2 令牌。
+
+**获取 OAuth2 令牌**：
+
+1. 在浏览器中登录 https://gitcode.com
+2. 按 `F12` 打开开发者工具
+3. 切换到 `Application`（应用）标签页
+4. 左侧选择 `Local Storage` → `https://gitcode.com`
+5. 找到名为 `access_token` 的键，双击复制其值（一个以 `eyJ` 开头的长字符串）
+6. 设置环境变量：
 
 ```bash
-python3 scripts/setup_token.py
+export GITCODE_OAUTH_TOKEN=<刚才复制的access_token值>
 ```
 
-或者手动配置：
+> OAuth2 令牌有效期约 15 天，过期后需重复上述步骤重新获取。
+
+#### 2.2 个人访问令牌（GITCODE_TOKEN）— 仅发布整体审查结论时需要
+
+如果你只需要发布逐行评论（`--inline` 模式），**不需要** 此令牌。
+仅在使用 `--body` 发布整体审查结论时需要。
 
 ```bash
-git config --global gitcode.token <your-token>
+export GITCODE_TOKEN=<your-personal-access-token>
 ```
 
-也可以使用环境变量：
-
-```bash
-export GITCODE_TOKEN=<your-token>
-```
+**获取个人访问令牌**：GitCode → 设置 → 私人令牌 → 创建新令牌（勾选 `pull_requests`、`issues`、`projects`）
 
 ### 3. 直接开始用
 
@@ -159,13 +174,15 @@ git pull
 
 如果你不是软链接，而是直接复制文件到 skills 目录，更新后需要重新复制一遍最新文件。
 
-## Token 权限
+## 令牌说明
 
-你的 GitCode Token 至少需要这些权限：
+| 令牌 | 环境变量 | 用途 | 是否必需 | 获取方式 |
+|------|----------|------|----------|----------|
+| OAuth2 访问令牌 | `GITCODE_OAUTH_TOKEN` | 创建 diff 关联逐行评论 | **逐行评论必需** | 浏览器 F12 → Local Storage → `access_token` |
+| 个人访问令牌 | `GITCODE_TOKEN` | 发布整体审查结论 (`--body`) | 仅 `--body` 模式需要 | GitCode → 设置 → 私人令牌 |
 
-- `pull_requests`
-- `issues`
-- `projects`
+> 逐行评论（`--inline`）只需要 `GITCODE_OAUTH_TOKEN`，不需要 `GITCODE_TOKEN`。
+> 拉取 PR 信息（`fetch_pr_info.py`）也同理：仅有 `GITCODE_OAUTH_TOKEN` 时会自动走 v4 API + Bearer 回退，无需 PAT 即可完成获取。
 
 ## 命令行脚本
 
@@ -196,7 +213,8 @@ https://gitcode.com/owner/repo/pull/123
 
 ## 注意事项
 
-- 不要把 GitCode Token 提交到仓库里
+- 不要把令牌（`GITCODE_TOKEN`、`GITCODE_OAUTH_TOKEN`）提交到仓库里
+- OAuth2 令牌有效期约 15 天，过期后需从浏览器重新获取
 - 发布逐行评论前，建议先让 agent 展示审查摘要
 - 如果 PR 更新过，建议重新抓取后再发布评论
 

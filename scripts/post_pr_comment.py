@@ -43,6 +43,7 @@ from urllib.parse import quote
 # GitCode API 配置
 API_V4_BASE = "https://api.gitcode.com/api/v4"
 API_V5_BASE = "https://api.gitcode.com/api/v5"
+WEB_API_BASE = "https://web-api.gitcode.com"
 COMMENT_SECTION_RE = re.compile(r"\*\*(严重程度|问题|原因|怎么改|应该怎么改)\s*[：:]\*\*")
 SEVERITY_ALIASES = {
     "critical": "严重",
@@ -247,26 +248,80 @@ def get_gitcode_token(token: Optional[str] = None) -> str:
     )
 
 
-def get_pr_info(owner: str, repo: str, pull_number: str, token: str) -> Dict[str, Any]:
-    """Get PR information including head and base SHA."""
-    url = f"{API_V5_BASE}/repos/{owner}/{repo}/pulls/{pull_number}"
+def get_oauth_token() -> str:
+    """Get GitCode OAuth2 access token (required for inline comments).
+
+    The public v5 API only supports generic comments (no diff attachment).
+    To create **true diff-attached inline comments**, an OAuth2 access token
+    is required.  Users can obtain one by:
+
+    1. Logging into https://gitcode.com in a web browser
+    2. Opening DevTools > Application > Local Storage > gitcode.com
+    3. Copying the value of the ``access_token`` key
+    4. Setting it as the ``GITCODE_OAUTH_TOKEN`` environment variable
+
+    Raises ValueError if the token is not configured.
+    """
+    token = os.environ.get("GITCODE_OAUTH_TOKEN")
+    if not token:
+        raise ValueError(
+            "GITCODE_OAUTH_TOKEN is not set. Diff-attached inline comments "
+            "require an OAuth2 access token (not a personal access token).\n"
+            "How to obtain:\n"
+            "  1. Log into https://gitcode.com in a browser\n"
+            "  2. F12 > Application > Local Storage > gitcode.com\n"
+            "  3. Copy the value of 'access_token'\n"
+            "  4. export GITCODE_OAUTH_TOKEN=<the-copied-value>"
+        )
+    return token
+
+
+def get_project_id(owner: str, repo: str, oauth_token: str) -> Optional[int]:
+    """Get the numeric project ID via v4 GET project (OAuth2 Bearer)."""
+    project_path = quote(f"{owner}/{repo}", safe="")
+    url = f"{API_V4_BASE}/projects/{project_path}"
     headers = {
-        "PRIVATE-TOKEN": token,
+        "Authorization": f"Bearer {oauth_token}",
         "Accept": "application/json",
-        "User-Agent": "gitcode-code-reviewer/1.0"
+        "User-Agent": "gitcode-code-reviewer/1.0",
     }
-    
     req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as response:
             data = json.loads(response.read().decode("utf-8"))
+            return data.get("id")
+    except Exception:
+        return None
+
+
+def get_pr_info(owner: str, repo: str, pull_number: str, oauth_token: str) -> Dict[str, Any]:
+    """Get PR information (head/base SHA) via v4 GET merge_request (OAuth2 Bearer).
+
+    Uses the v4 API because the v5 API does not accept OAuth2 Bearer tokens.
+    The v4 GET merge_request endpoint returns ``diff_refs`` with the SHA values
+    needed for diff-attached inline comments.
+    """
+    project_path = quote(f"{owner}/{repo}", safe="")
+    url = f"{API_V4_BASE}/projects/{project_path}/merge_requests/{pull_number}"
+    headers = {
+        "Authorization": f"Bearer {oauth_token}",
+        "Accept": "application/json",
+        "User-Agent": "gitcode-code-reviewer/1.0"
+    }
+
+    req = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            diff_refs = data.get("diff_refs", {})
+            base_sha = diff_refs.get("base_sha", "")
             return {
-                "head_sha": data.get("head", {}).get("sha", ""),
-                "base_sha": data.get("base", {}).get("sha", ""),
-                "start_sha": data.get("base", {}).get("sha", ""),
+                "head_sha": diff_refs.get("head_sha", ""),
+                "base_sha": base_sha,
+                "start_sha": diff_refs.get("start_sha", base_sha),
                 "title": data.get("title", ""),
                 "state": data.get("state", ""),
-                "author": data.get("user", {}).get("login", "")
+                "author": data.get("author", {}).get("username", "")
             }
     except urllib.error.HTTPError as e:
         raise RuntimeError(f"Failed to get PR info: {e.code} - {e.reason}")
@@ -282,58 +337,103 @@ def post_inline_comment(
     line: int,
     body: str,
     sha_info: Dict[str, str],
-    token: str,
     side: str = "RIGHT"
 ) -> bool:
+    """Post a **diff-attached inline comment** to the PR.
+
+    Uses the GitCode internal web-api (same endpoint the web UI uses) with an
+    OAuth2 access token to create a GitLab-style discussion with position info.
+
+    Requires:
+    - ``GITCODE_OAUTH_TOKEN``: OAuth2 access token (from browser localStorage)
+    - ``sha_info``: must contain ``base_sha``, ``head_sha``, ``start_sha``
     """
-    Post a line-level inline comment to the PR.
-    Uses GitLab v4 API for inline comments.
+    oauth_token = get_oauth_token()
+    project_id = get_project_id(owner, repo, oauth_token)
+    if not project_id:
+        print(f"    Error: Could not resolve numeric project ID for {owner}/{repo}")
+        return False
+
+    return post_diff_inline_comment(
+        project_id, pull_number, path, line, body,
+        sha_info, oauth_token, side,
+    )
+
+
+def post_diff_inline_comment(
+    project_id: int,
+    pull_number: str,
+    path: str,
+    line: int,
+    body: str,
+    sha_info: Dict[str, str],
+    oauth_token: str,
+    side: str = "RIGHT",
+) -> bool:
+    """Post a **true diff-attached** inline comment via the internal web-api.
+
+    Uses the GitCode internal API (``web-api.gitcode.com``) with an OAuth2
+    access token to create a GitLab-style discussion with position info.
+    This is the same endpoint the GitCode web UI uses when a reviewer clicks
+    on a diff line to add a comment.
+
+    Requires:
+    - ``oauth_token``: an OAuth2 access token (from browser localStorage),
+      NOT a personal access token.
+    - ``project_id``: the numeric project ID (obtainable via v4 GET project).
+    - ``sha_info``: must contain ``base_sha``, ``head_sha``, ``start_sha``.
     """
-    project_id = f"{owner}/{repo}"
-    encoded_project = quote(project_id, safe="")
-    url = f"{API_V4_BASE}/projects/{encoded_project}/merge_requests/{pull_number}/discussions"
-    
+    url = (
+        f"{WEB_API_BASE}/issuepr/api/v1/projects/{project_id}"
+        f"/merge_requests/{pull_number}/discussions"
+    )
+
     headers = {
-        "PRIVATE-TOKEN": token,
+        "Authorization": f"Bearer {oauth_token}",
         "Content-Type": "application/json",
         "Accept": "application/json",
-        "User-Agent": "gitcode-code-reviewer/1.0"
+        "Origin": "https://gitcode.com",
+        "Referer": "https://gitcode.com/",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "X-App-Version": "0",
+        "X-Platform": "web",
+        "X-Device-Type": "pc",
+        "X-App-Channel": "gitcode-fe",
     }
-    
-    # Build position object
+
     position = {
         "position_type": "text",
         "base_sha": sha_info["base_sha"],
         "head_sha": sha_info["head_sha"],
         "start_sha": sha_info["start_sha"],
         "new_path": path,
-        "new_line": line
+        "new_line": line,
     }
-    
-    # For deleted lines, use old_path and old_line
+
     if side == "LEFT":
         position["old_path"] = path
         position["old_line"] = line
         del position["new_path"]
         del position["new_line"]
-    
-    payload = {
-        "body": body,
-        "position": position
-    }
-    
+
+    payload = {"body": body, "position": position}
+
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    
+
     try:
         with urllib.request.urlopen(req, timeout=30) as response:
             return True
     except urllib.error.HTTPError as e:
         error_detail = e.read().decode("utf-8")
-        print(f"    Error posting inline comment: {e.code} - {error_detail[:200]}")
+        print(f"    [diff-attached] Error: {e.code} - {error_detail[:200]}")
         return False
     except Exception as e:
-        print(f"    Error: {e}")
+        print(f"    [diff-attached] Error: {e}")
         return False
 
 
@@ -379,29 +479,43 @@ def post_pr_review(
     event: str,
     token: str
 ) -> bool:
-    """Post a PR review with summary."""
-    url = f"{API_V5_BASE}/repos/{owner}/{repo}/pulls/{pull_number}/reviews"
-    
+    """Post a PR review summary via the v5 ``/review`` (singular) endpoint.
+
+    Note: GitCode's ``/review`` endpoint requires the token holder to have
+    reviewer/approval authority on the repository.  If a 403 is returned we
+    gracefully fall back to posting the summary as a generic PR comment so the
+    review content is never lost.
+    """
+    url = f"{API_V5_BASE}/repos/{owner}/{repo}/pulls/{pull_number}/review"
+
     headers = {
         "PRIVATE-TOKEN": token,
         "Content-Type": "application/json",
         "Accept": "application/json",
         "User-Agent": "gitcode-code-reviewer/1.0"
     }
-    
+
     payload = {
         "body": body,
         "event": event  # COMMENT, APPROVE, REQUEST_CHANGES
     }
-    
+
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    
+
     try:
         with urllib.request.urlopen(req, timeout=30) as response:
             return True
     except urllib.error.HTTPError as e:
         error_detail = e.read().decode("utf-8")
+        if e.code == 403:
+            print("    Review endpoint returned 403 (no approval authority). "
+                  "Falling back to a generic PR comment...")
+            return post_general_comment(owner, repo, pull_number, body, token)
+        if e.code == 404:
+            print("    Review endpoint not found. "
+                  "Falling back to a generic PR comment...")
+            return post_general_comment(owner, repo, pull_number, body, token)
         print(f"    Error: {e.code} - {error_detail[:200]}")
         return False
     except Exception as e:
@@ -457,20 +571,20 @@ Comments JSON format for inline comments:
     
     args = parser.parse_args()
     
-    # Get token
-    try:
-        token = get_gitcode_token(args.token)
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
-        sys.exit(1)
-    
     print(f"GitCode PR Review Comment Tool")
     print(f"Repository: {args.owner}/{args.repo}")
     print(f"PR: #{args.pull_number}")
     print()
     
-    # Mode: Inline comments
+    # Mode: Inline comments (requires only GITCODE_OAUTH_TOKEN, no PAT needed)
     if args.inline and args.comments_file:
+        # Get OAuth2 token (required for inline mode)
+        try:
+            oauth_token = get_oauth_token()
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        
         # Load comments
         comments_file = Path(args.comments_file)
         if not comments_file.exists():
@@ -494,10 +608,10 @@ Comments JSON format for inline comments:
             print("No comments to post.")
             sys.exit(0)
         
-        # Get PR SHA info
+        # Get PR SHA info (uses v4 API with OAuth2, no PAT needed)
         print("Fetching PR information...")
         try:
-            sha_info = get_pr_info(args.owner, args.repo, args.pull_number, token)
+            sha_info = get_pr_info(args.owner, args.repo, args.pull_number, oauth_token)
         except RuntimeError as e:
             print(f"Error: {e}", file=sys.stderr)
             sys.exit(1)
@@ -507,7 +621,7 @@ Comments JSON format for inline comments:
         print()
         
         # Post inline comments
-        print(f"Posting {len(comments)} inline comments...")
+        print(f"Posting {len(comments)} diff-attached inline comments...")
         print()
         
         success_count = 0
@@ -523,7 +637,7 @@ Comments JSON format for inline comments:
             
             if post_inline_comment(
                 args.owner, args.repo, args.pull_number,
-                path, line, body, sha_info, token, side
+                path, line, body, sha_info, side
             ):
                 success_count += 1
             else:
@@ -537,17 +651,23 @@ Comments JSON format for inline comments:
         if failed_count > 0:
             sys.exit(1)
     
-    # Mode: General comment/review
+    # Mode: General comment/review (requires GITCODE_TOKEN / PAT)
     elif args.body:
+        try:
+            token = get_gitcode_token(args.token)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+        
         print(f"Posting general {args.review_event} comment...")
         
         if post_pr_review(
             args.owner, args.repo, args.pull_number,
             args.body, args.review_event, token
         ):
-            print("  ✓ Posted successfully")
+            print("  [OK] Posted successfully")
         else:
-            print("  ✗ Failed to post")
+            print("  [FAIL] Failed to post")
             sys.exit(1)
     
     else:

@@ -9,14 +9,24 @@ description: 用于审查 GitCode PR，并结合 PR metadata、diff 与整个代
 
 ## 前置要求
 
-### GitCode 访问令牌
+### GitCode OAuth2 令牌（发布逐行评论必需）
 
-本技能需要 GitCode 访问令牌，用于获取 PR 信息和发布评论。令牌可通过以下方式之一配置：
+GitCode 公开 API 不支持创建 diff 关联的行级评论。发布逐行评论需要 OAuth2 访问令牌：
 
-1. **环境变量**（推荐）：`GITCODE_TOKEN`
+1. 在浏览器中登录 https://gitcode.com
+2. F12 → Application → Local Storage → `gitcode.com` → 复制 `access_token` 的值
+3. 设置环境变量：`export GITCODE_OAUTH_TOKEN="复制的值"`
+
+> OAuth2 令牌有效期约 15 天，过期后需重新获取。
+> 逐行评论只需要此令牌，不需要个人访问令牌。
+
+### GitCode 个人访问令牌（仅发布整体审查结论时需要）
+
+仅在使用 `--body` 发布整体审查结论时需要 `GITCODE_TOKEN`（PAT）。
+逐行评论（`--inline`）不需要此令牌。
+
+1. **环境变量**：`export GITCODE_TOKEN=<your-token>`
 2. **Git 配置**：`git config --global gitcode.token <your-token>`
-
-如果没有找到令牌，需要提示用户提供。
 
 ### 获取 GitCode 令牌
 
@@ -45,6 +55,13 @@ python scripts/fetch_pr_info.py \
   --owner <OWNER> --repo <REPO> --pull-number <NUMBER> \
   [--token <TOKEN>] [--output-dir <DIR>]
 ```
+
+令牌来源（二选一，逐行评论流程只需 OAuth2）：
+
+- `GITCODE_OAUTH_TOKEN`（OAuth2 访问令牌）：走 **v4 API + Bearer** 回退路径，可独立完成本步骤，不需要 PAT。
+- `GITCODE_TOKEN`（个人访问令牌）：走 v5 API + `PRIVATE-TOKEN`。
+
+脚本会按可用令牌自动选择 API 路径：有 PAT 优先用 v5；仅 OAuth2、或 v5 返回 401（OAuth2 无法用于 v5）时自动回退到 v4 + Bearer，依次通过 `/projects/{id}`、`/merge_requests/{num}`、`/merge_requests/{num}/changes`、`/merge_requests/{num}/discussions` 获取元数据、文件与 diff、评论（v4 的 `/notes` 为 404，评论从 `/discussions` 按线程展平）。v4 的 `/diffs` 与 `/repository/files` 在 GitCode 上为 404，因此 diff 由 `/merge_requests/{num}/changes` 的每文件 patch 拼装。
 
 该脚本会获取：
 
@@ -170,7 +187,10 @@ git checkout "pr-<NUMBER>-source"
 
 ### 8. 将评论发布到 PR（可选）
 
-先询问用户：“是否要把这些发现作为逐行评论发布到 PR？”
+先询问用户："是否要把这些发现作为逐行评论发布到 PR？"
+
+> **前提**：发布逐行评论需要 `GITCODE_OAUTH_TOKEN` 环境变量（OAuth2 访问令牌）。
+> 如果未配置，脚本会报错并提示获取方法。
 
 如果用户确认，则创建评论 JSON 文件，并使用 `scripts/post_pr_comment.py` 发布：
 
@@ -235,6 +255,11 @@ rm -rf /tmp/gitcode-review-<REPO>-<TIMESTAMP>
 
 用于从 GitCode API 获取 PR 信息。
 
+支持两条认证路径，逐行评论流程只需 `GITCODE_OAUTH_TOKEN`：
+
+- 有 `GITCODE_TOKEN`（PAT）时走 v5 API + `PRIVATE-TOKEN`；
+- 仅 `GITCODE_OAUTH_TOKEN`（OAuth2）、或 v5 返回 401 时自动回退到 v4 API + `Authorization: Bearer`，分别获取项目 ID、MR 元数据、`/merge_requests/{num}/changes`（文件 + diff）、`/merge_requests/{num}/discussions`（评论，按 discussion 展平）。
+
 ```bash
 python scripts/fetch_pr_info.py \
   --owner OWNER \
@@ -249,7 +274,7 @@ python scripts/fetch_pr_info.py \
 
 用于向 GitCode PR 发布评论。
 
-**发布逐行行级评论：**
+**发布逐行审查评论（以 PR 评论形式，附带文件+行号引用）：**
 
 ```bash
 python scripts/post_pr_comment.py \
@@ -290,18 +315,46 @@ python scripts/setup_token.py --verify-only
 
 ## 技术说明
 
-### API 版本
+### API 版本与行级评论能力
 
-GitCode 同时支持 v4（兼容 GitLab）和 v5（兼容 GitHub）两套 API：
+GitCode 维护了多套 API：
 
-- **v5 API**：用于获取 PR 信息、文件列表和普通评论
+- **v5 API**（公开，`PRIVATE-TOKEN` 认证）：用于获取 PR 信息、文件列表、发布普通评论
   - 基础地址：`https://api.gitcode.com/api/v5`
-  - 认证方式：`PRIVATE-TOKEN` 请求头
+  - `POST /repos/{owner}/{repo}/pulls/{number}/comments`：发布普通评论
+  - `POST /repos/{owner}/{repo}/pulls/{number}/review`：发布审查结论（需要 reviewer 权限；权限不足时自动回退为普通评论）
+  - **注意**：`/comments` 接口会忽略 `path`/`line`/`side`/`position` 等行级字段
+  - **注意**：v5 不接受 OAuth2 Bearer 令牌（返回 401），仅接受 PAT
 
-- **v4 API**：用于创建逐行行级评论
-  - 基础地址：`https://api.gitcode.com/api/v4`
-  - 认证方式：`PRIVATE-TOKEN` 请求头
-  - 接口：`POST /projects/{encoded_project}/merge_requests/{mr_iid}/discussions`
+- **v4 API**（公开）：POST 写入操作已全面禁用（返回 403），无法用于创建行级评论；但 **GET 接受 OAuth2 Bearer 令牌**，因此用于在仅有 OAuth2 令牌时读取 PR 信息
+
+- **内部 API**（`web-api.gitcode.com`）：支持 GitLab 风格 discussions 行级评论，
+  需要 OAuth2 会话令牌（浏览器登录获取），个人访问令牌无法用于 POST
+
+### 行级评论的发布方式
+
+`post_pr_comment.py --inline` 通过 GitCode 内部 API 创建真正的 **diff 关联行级评论**
+（与 GitCode Web UI 相同的端点）。全程只需要 `GITCODE_OAUTH_TOKEN`：
+
+- **v4 GET merge_request**（`Authorization: Bearer`）：获取 `diff_refs`（head_sha/base_sha/start_sha）
+- **v4 GET project**（`Authorization: Bearer`）：获取数字项目 ID
+- **内部 web-api POST discussions**（`Authorization: Bearer`）：创建 diff 关联评论
+
+> v5 API 不接受 OAuth2 Bearer 令牌（返回 401），因此使用 v4 API 获取 PR 信息。
+> `GITCODE_TOKEN`（PAT）仅在 `--body` 模式发布整体审查结论时需要，逐行评论不需要。
+
+### PR 信息的获取方式
+
+`fetch_pr_info.py` 与 `post_pr_comment.py` 采用相同的认证策略，保证「逐行评论只需 OAuth2」的承诺在获取阶段也成立：
+
+- 有 `GITCODE_TOKEN`（PAT）时，走 v5 API + `PRIVATE-TOKEN` 获取 PR、文件、diff、评论；
+- 仅 `GITCODE_OAUTH_TOKEN`（OAuth2）时，或 v5 返回 401 时，自动回退到 v4 API + `Authorization: Bearer`：
+  - `GET /projects/{id}`：解析数字项目 ID
+  - `GET /projects/{id}/merge_requests/{num}`：获取 PR 元数据与 `diff_refs`
+  - `GET /projects/{id}/merge_requests/{num}/changes`：获取变更文件及每文件 diff（GitCode v4 的 `/diffs`、`/repository/files` 为 404，故 diff 由本端点拼装）
+  - `GET /projects/{id}/merge_requests/{num}/discussions`：获取评论（v4 的 `/notes` 为 404，改从 `/discussions` 按线程展平）
+
+v4 响应会被映射成 v5 `/pulls/{num}/files` 的字段结构，下游 `summary.json`、`pr_files.json`、`pr_diff.patch` 的使用方式不变。
 
 ### 评论 JSON 格式
 
